@@ -7,21 +7,23 @@ my($paths_file) = "";
 my($truefile) = "";
 my($iter) = 100000; 
 my($mode) = '';  
-my($compath) = '';
 my($back) = ''; #backward elimination mode 
 GetOptions( "condgraph=s" => \$cond_graph,
 	    "compset=s" => \$comp_sets,
-	    "pathsfile=s" => \$paths_file,
+	    "pathsfile:s" => \$paths_file,
 	    "trueset:s" => \$truefile,
 	     "iter:i" => \$iter,
-	    "random" => \$mode, "back" => \$back, "compath" => \$compath)  
+	    "random" => \$mode, "back" => \$back)  
 	or die("Error in input data \n");
 
 load_condensed_graph($cond_graph);
 $count = load_paired_compatibles($comp_sets);
 
-load_all_paths() if !$compath;
-load_all_paths_compath() if $compath;
+pair_complement_nodes();
+retain_paired_paths() if $paths_file ne "";
+#
+load_all_paths() if $paths_file ne "";  # modified to load only forwad and reverse pairs 
+
 $wrfile = $truefile;
 
 likelihood_trueset() if $truefile ne "";
@@ -37,6 +39,7 @@ if($mode)
 {
 	print "Estimating backward elimination \n";
 	likelihood_subset_backward_elimination();
+#	print "number of possible haplotypes is ".scalar(keys %allpaths)."\n";
 #	my(@start_set) = keys %allpaths;
 #	print "Likelihood all ".likelihood_current_set(@start_set)."\n";
 }else
@@ -56,7 +59,9 @@ sub likelihood_subset_backward_elimination
 	while($temp_like != -9**9**9) 
 	{
 		$old_like = $temp_like;
-		$temp = splice(@start_set,$remove_haps,1);
+		#$temp = splice(@start_set,$remove_haps,1);
+		@start_set = grep { $_ != $remove_haps} @start_set;
+		@start_set = grep { $_ != $path_pair{$k} } @start_set;  # Remove haplotypes in pairs of forward and reverse 
 		$remove_haps = backward_elimination_fixed_size(@start_set);
 	}
 	foreach (sort @start_set) { print "$_ "; } print "\n";
@@ -70,17 +75,25 @@ sub backward_elimination_fixed_size
 	#print "$#current_haps_\n";
 	my($new_like) = 0; my(@set_reduced) = @current_haps_; $temp_like  = -9**9**9;
 	my($imp_var) = -10;
-	for(my($i)=0;$i<=$#current_haps_;$i++)
+	my($num_haps_temp) = scalar(@current_haps_);
+	my(%temp_set_reduced) = map{ $_ => 0} @current_haps_;
+	for $k(keys %temp_set_reduced) 
 	{
 		# Remove an haplotype from the current set and compute likelihood of the remaining set 
-		@set_reduced = @current_haps_;
-		@temp = splice(@set_reduced,$i,1);
-		$new_like = likelihood_current_set(@set_reduced);
-		if($new_like != 0 && $new_like > $temp_like ) { 
-			$temp_like = $new_like; $imp_var = $i; 
+		if($temp_set_reduced{$k} == 0) 
+		{
+			@set_reduced = grep {$_ != $k} @current_haps_;
+			@set_reduced = grep {$_ != $path_pair{$k} } @set_reduced; 
+			$temp_set_reduced{$k} = 1;
+			$temp_set_reduced{$path_pair{$k}} = 1;
+			$new_like = likelihood_current_set(@set_reduced);
+			if($new_like != 0 && $new_like > $temp_like ) { 
+				$temp_like = $new_like; $imp_var = $k; 
+			}
 		}
 	}
-	print $#current_haps_." $temp_like $current_haps_[$imp_var]\n";
+	print $#current_haps_." $temp_like $imp_var\n";
+	undef(%temp_set_reduced);
 	return $imp_var;
 }
 
@@ -188,28 +201,6 @@ sub likelihood_trueset
 	
 }
 
-
-sub load_all_paths_compath
-{
-	%allpaths = ();
-	open(file,$paths_file);
-	while($l = <file>)
-	{
-		chomp($l);
-		@arr = split(/_/,$l);
-		$l = <file>; #haplotype number information
-		chomp($l);
-		($pathno,$t,$length) = split(/_/,substr($l,1));
-		for(my($i)=$#arr-1; $i>=0; $i--) 
-		{
-			print "$arr[$i] ";
-			push @{$allpaths{$pathno}}, $arr[$i];
-		}
-		print "\n";
-	}
-	close file;
-}
-
 sub load_all_paths
 {
 	%allpaths = ();
@@ -221,9 +212,11 @@ sub load_all_paths
 		$l = <file>;
 		chomp($l);
 		($pathno,$t,$length) = split(/_/,substr($l,1));
-		for(my($i)=0;$i<scalar(@arr);$i=$i+2){ 
-			my($n,$node) = split(/:/,$arr[$i]);
-			push @{$allpaths{$pathno}}, $node;
+		if(exists($path_pair{$pathno})) {
+			for(my($i)=0;$i<scalar(@arr);$i=$i+2){ 
+				my($n,$node) = split(/:/,$arr[$i]);
+				push @{$allpaths{$pathno}}, $node;
+			}
 		}
 	}
 	close file;
@@ -373,27 +366,40 @@ sub compute_set_likelihood_using_d
 {
 	#print "In compute set \n";
 	my($llik) = 0; my($min) = 0; my($max) = -9**9**9; 
-	$Scale = $num_haps*$genome_length; 
+	$Scale = $num_haps*$genome_length;
+	# Make sure that one -forward and reverse node pair is only visited once. 
+	my(%visit_fwd_rev) = ();
+	for $k1 ( keys %compatible_set) 
+	{
+		for $k2( keys %{$compatible_set{$k1}} ) 
+		{
+			$visit_fwd_rev{$k1}{$k2} = 0;
+		}
+	}
 	for $k1( keys %compatible_set ) 
 	{
-	#	print "Processing $k1 compatible set \n";
 		for $k2(keys %{$compatible_set{$k1}}) 
 		{
-			if(exists($d_hashtable{$k1}{$k2}))
+			if(exists($d_hashtable{$k1}{$k2}) )
 			{
-				$temp0 = $d_hashtable{$k1}{$k2}/($Scale-$length_diff{$k1}{$k2});
-				#if($temp0 == 0 ) { print "$k1 $k2 $d_hashtable{$k1}{$k2} \n"; }
-				$temp1 = $total_count - $compatible_set{$k1}{$k2};
-				$temp2 = 1 - ($d_hashtable{$k1}{$k2}/($Scale-$length_diff{$k1}{$k2}));
-				#if($temp2 == 0 ) { print "$k1 $k2 $d_hashtable{$k1}{$k2} \n"; }
-				$val = $temp1*log($temp2) + $compatible_set{$k1}{$k2} * log($temp0);
-	#			if($val > $max ) { $max = $val; } 
-	#			if($val < $min ) { $min = $val; $t1 = $k1; $t2 = $k2;}
-				$llik += $val;
+				if($visit_fwd_rev{$k1}{$k2}==0) {
+					#print "Processing $k1 $k2  \n";
+					$temp0 = $d_hashtable{$k1}{$k2}/($Scale-$length_diff{$k1}{$k2});
+					#if($temp0 == 0 ) { print "$k1 $k2 $d_hashtable{$k1}{$k2} \n"; }
+					$temp1 = $total_count - $compatible_set{$k1}{$k2};
+					$temp2 = 1 - ($d_hashtable{$k1}{$k2}/($Scale-$length_diff{$k1}{$k2}));
+					#if($temp2 == 0 ) { print "$k1 $k2 $d_hashtable{$k1}{$k2} \n"; }
+					$val = $temp1*log($temp2) + $compatible_set{$k1}{$k2} * log($temp0);
+		#			if($val > $max ) { $max = $val; } 
+		#			if($val < $min ) { $min = $val; $t1 = $k1; $t2 = $k2;}
+					$llik += $val;
+					$visit_fwd_rev{$k1}{$k2} = 1;
+					$visit_fwd_rev{$paired_nodes{$k2}}{$paired_nodes{$k1}} = 1;
+				}
 			}else 
 			{
 				#compatible set contains a haplotype which is not supported by the set of haplotypes given, reject the set of haplotypes 	
-#				print "Set of haplotypes not compatible based on data $k1 $k2 $compatible_set{$k1}{$k2} \n";
+				#print "Set of haplotypes not compatible based on data $k1 $k2 $compatible_set{$k1}{$k2} \n";
 				return $min;
 			}
 		}
@@ -425,4 +431,78 @@ sub compute_d_hashtable
 			}
 		}
 	}
+}
+
+sub pair_complement_nodes
+{
+	# take all the nodes and compute their reverse complements, and a paired hash table be created. 
+	my(%temp_hash) = ();
+	my(%inverse_hash) = ();
+	for $k( keys %cond_ver) {
+		$temp_hash{$k} = 0;
+		$inverse_hash{$cond_ver{$k}} = $k;
+	} 
+	#Link nodes which are reverse complements of each other. 
+	for $k(keys %cond_ver)
+	{
+		if($temp_hash{$k}==0) {
+			my($temp) = revcomplement($cond_ver{$k});
+			$paired_nodes{$k} = $inverse_hash{$temp};
+			$paired_nodes{$inverse_hash{$temp}} = $k ; 
+			$temp_hash{$k} = 1; 
+			$temp_hash{$inverse_hash{$temp}} = 1;
+		}
+	}
+	undef %inverse_hash;
+	undef %temp_hash;
+}
+
+sub retain_paired_paths
+{
+	%allpaths = ();
+	open(file,$paths_file);
+	while($l=<file>)
+	{
+		chomp($l);
+		@arr = split(/ /,$l);
+		$l = <file>;
+		chomp($l);
+		($pathno,$t,$length) = split(/_/,substr($l,1));
+		my($str) = ""; my($rev_str) = "";
+		for(my($i)=0;$i<scalar(@arr);$i=$i+2){ 
+			my($n,$node) = split(/:/,$arr[$i]);
+	#		push @{$allpaths{$pathno}}, $node;
+			$str = $str."_".$node;
+			$rev_str = $paired_nodes{$node}."_".$rev_str;
+		}
+		$str = substr($str,1);
+		$rev_str = substr($rev_str,0,-1);
+#		print "$str $rev_str\n";
+		if(exists($allpaths{$rev_str})) { 
+			$path_pair{$pathno} = $allpaths{$rev_str}; 
+			$path_pair{$allpaths{$rev_str}} = $pathno;
+			delete $allpaths{$rev_str};
+		}else{
+			$allpaths{$str} = $pathno;
+		}
+	}
+	close file;
+#	for $k1 (sort {$a<=>$b} keys %path_pair)
+#	{
+#		print "$k1 $path_pair{$k1}\n";
+#	}
+	undef %allpaths;
+}
+sub revcomplement
+{
+	my($str) = $_[0];
+	$str = scalar reverse $str;
+	$rev_str="";
+	for (my($i)=0;$i<length($str);$i++) {
+		if(substr($str,$i,1) eq "A") {$rev_str = $rev_str."T";} 
+		elsif(substr($str,$i,1) eq "T") {$rev_str = $rev_str."A";}
+		elsif(substr($str,$i,1) eq "C") {$rev_str = $rev_str."G";}
+		else {$rev_str = $rev_str."C";}
+	}
+	return $rev_str;
 }
