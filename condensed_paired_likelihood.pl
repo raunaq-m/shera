@@ -7,12 +7,14 @@ my($paths_file) = "";
 my($truefile) = "";
 my($iter) = 100000; 
 my($mode) = '';  
-my($back) = ''; #backward elimination mode 
+my($back) = ''; #backward elimination mode
+my($kmer_size) = 60; 
 GetOptions( "condgraph=s" => \$cond_graph,
 	    "compset=s" => \$comp_sets,
 	    "pathsfile:s" => \$paths_file,
 	    "trueset:s" => \$truefile,
 	     "iter:i" => \$iter,
+	     "kmer:i" => \$kmer_size,
 	    "random" => \$mode, "back" => \$back)  
 	or die("Error in input data \n");
 
@@ -28,7 +30,7 @@ $wrfile = $truefile;
 
 likelihood_trueset() if $truefile ne "";
 %set_paths = ();
-#print_compatible_set();
+print_compatible_set();
 #print "$count loaded ".scalar(keys %cond_graphout)." nodes loaded ".scalar(keys %compatible_set)." compatible set loaded \n";
 if($mode)
 {	
@@ -38,10 +40,10 @@ if($mode)
 }elsif($back)
 {
 	print "Estimating backward elimination \n";
-	likelihood_subset_backward_elimination();
 #	print "number of possible haplotypes is ".scalar(keys %allpaths)."\n";
 #	my(@start_set) = keys %allpaths;
 #	print "Likelihood all ".likelihood_current_set(@start_set)."\n";
+	likelihood_subset_backward_elimination();
 }else
 {
 	$wrfile =~ s/trueset/like_replace.txt/;
@@ -61,10 +63,13 @@ sub likelihood_subset_backward_elimination
 		$old_like = $temp_like;
 		#$temp = splice(@start_set,$remove_haps,1);
 		@start_set = grep { $_ != $remove_haps} @start_set;
-		@start_set = grep { $_ != $path_pair{$k} } @start_set;  # Remove haplotypes in pairs of forward and reverse 
+		@start_set = grep { $_ != $path_pair{$remove_haps} } @start_set;  # Remove haplotypes in pairs of forward and reverse 
+		print scalar(@start_set)." $temp_like $remove_haps $path_pair{$remove_haps}\n";
 		$remove_haps = backward_elimination_fixed_size(@start_set);
 	}
+#	print "printing start set \n";
 	foreach (sort @start_set) { print "$_ "; } print "\n";
+	#print_haplotypes_final(@start_set);
 	foreach (sort @trueset) { print "$_ "; } print "\n";
 #	print "$current_like with ".$#current_haps_." haplotypes and $temp_like with best minus one. Removed one is $current_haps_[$imp_var] \n";
 }
@@ -73,6 +78,7 @@ sub backward_elimination_fixed_size
 	my(@current_haps_) = @_;
 	my($current_like ) = likelihood_current_set(@current_haps_);
 	#print "$#current_haps_\n";
+	print $current_like."\n";
 	my($new_like) = 0; my(@set_reduced) = @current_haps_; $temp_like  = -9**9**9;
 	my($imp_var) = -10;
 	my($num_haps_temp) = scalar(@current_haps_);
@@ -87,12 +93,16 @@ sub backward_elimination_fixed_size
 			$temp_set_reduced{$k} = 1;
 			$temp_set_reduced{$path_pair{$k}} = 1;
 			$new_like = likelihood_current_set(@set_reduced);
+#			if ($new_like !=0 && scalar(@set_reduced) <=26) {
+#				foreach (@set_reduced) { print "$_ "; }
+#				print "$new_like\n"; 
+#			}	
 			if($new_like != 0 && $new_like > $temp_like ) { 
 				$temp_like = $new_like; $imp_var = $k; 
 			}
 		}
 	}
-	print $#current_haps_." $temp_like $imp_var\n";
+	#print scalar(@set_reduced)." $temp_like $imp_var\n";
 	undef(%temp_set_reduced);
 	return $imp_var;
 }
@@ -149,19 +159,19 @@ sub likelihood_subset
 	for( my($i) = 0 ; $i < $iter;  $i++)
 	{
 		undef %set_paths;
-		my($hap1 ) = $all_haps_[rand @all_haps_]; 
-		my($hap2 ) = $all_haps_[rand @all_haps_]; 
+		my($hap1 ) = $all_haps_[rand @all_haps_]; my($hap1c) = $path_pair{$hap1};
+		my($hap2 ) = $all_haps_[rand @all_haps_]; my($hap2c) = $path_pair{$hap2};
 		while(	exists($ground_truth{$hap1}) || exists($ground_truth{$hap2}) || $hap1 ==$hap2)
 		{
-			$hap1  = $all_haps_[rand @all_haps_]; 
-			$hap2  = $all_haps_[rand @all_haps_]; 
+			$hap1  = $all_haps_[rand @all_haps_]; $hap1c = $path_pair{$hap1}; 
+			$hap2  = $all_haps_[rand @all_haps_]; $hap2c = $path_pair{$hap2}; 
 		}
 			
-		my($rem1) = $trueset[rand @trueset];
-		my($rem2) = $trueset[rand @trueset];
+		my($rem1) = $trueset[rand @trueset]; my($rem1c) = $path_pair{$rem1};
+		my($rem2) = $trueset[rand @trueset]; my($rem2c) = $path_pair{$rem2};
 		while($rem2 == $rem1) 
 		{
-			$rem2 = $trueset[rand @trueset];
+			$rem2 = $trueset[rand @trueset]; $rem2c = $path_pair{$rem2};
 		}
 		#print "Added $hap1 $hap2 Removed $rem1 $rem2\n";
 		for(my($j)=0;$j<scalar(@trueset); $j++)
@@ -172,16 +182,21 @@ sub likelihood_subset
 			}elsif($trueset[$j]==$rem2 )
 			{
 				push @{$set_paths{$j}}, @{$allpaths{$hap2}};
+			}elsif($trueset[$j]==$rem1c )
+			{
+				push @{$set_paths{$j}}, @{$allpaths{$hap1c}};
+			}elsif($trueset[$j]==$rem2c )
+			{
+				push @{$set_paths{$j}}, @{$allpaths{$hap2c}};
 			}else
 			{
 				push @{$set_paths{$j}}, @{$allpaths{$trueset[$j]}};
 			}
 		}
 		my($like) =compute_paired_likelihood(); 
-		if ($like != 0 ) {  
-			print wr "Iter $i $hap1 $hap2 $rem1 $rem2 $like ";
-			if($like > $trueset_like ) { print wr  "greator "; }
-			print wr "\n";	
+		if ($like != 0 ) {
+			foreach (keys %set_paths) { print "$_ "; } 
+			print "$like \n";
 		}
 		if($i % 10000 ==0 ) { $dur = time-$start ; print "$i done in $dur seconds \n"; } 
 	} 	
@@ -220,6 +235,7 @@ sub load_all_paths
 		}
 	}
 	close file;
+	print "Number of paired paths is ".scalar(keys %allpaths)."\n";
 #	for $k1 (keys %allpaths)
 #	{
 #		print "Path $k1: ";
@@ -316,7 +332,7 @@ sub load_paired_compatibles
 			{
 				$total_count +=$count;
 				$compatible_set{$v1}{$v2} = $count;
-				$length_diff{$v1}{$v2} = $v2_depth - $v1_depth + $length_ver{$v2} + $length_ver{$v1};
+				$length_diff{$v1}{$v2} = $v2_depth - $v1_depth + $length_ver{$v2} ;
 			}
 		}
 	}
@@ -335,13 +351,26 @@ sub print_condensed_graph
 }
 sub print_compatible_set
 {	
+	my(%visit_fwd_rev) = ();
+	for $k1 ( keys %compatible_set) 
+	{
+		for $k2( keys %{$compatible_set{$k1}} ) 
+		{
+			$visit_fwd_rev{$k1}{$k2} = 0;
+		}
+	}
 	for $n1(keys %compatible_set) 
 	{
 		for $n2(keys %{$compatible_set{$n1}}) 
 		{
-			print "$n1 $n2 $compatible_set{$n1}{$n2} $length_diff{$n1}{$n2}\n";
+			if($visit_fwd_rev{$n1}{$n2} ==0) {
+				print "$n1 $n2 $compatible_set{$n1}{$n2} $length_diff{$n1}{$n2} $paired_nodes{$n2} $paired_nodes{$n1} $compatible_set{$paired_nodes{$n2}}{$paired_nodes{$n1}} $length_diff{$paired_nodes{$n2}}{$paired_nodes{$n1}}\n";
+				$visit_fwd_rev{$n1}{$n2} = 1;
+				$visit_fwd_rev{$paired_nodes{$n2}}{$paired_nodes{$n1}} = 1;
+			}
 		}
 	}
+	undef %visit_fwd_rev;
 }
 sub compute_paired_likelihood
 {
@@ -505,4 +534,20 @@ sub revcomplement
 		else {$rev_str = $rev_str."C";}
 	}
 	return $rev_str;
+}
+
+sub print_haplotypes_final
+{
+	#print the haplotypes present in the subset finally chosen or at any point 
+	my(@hap_set) = @_;
+	my($K) = $kmer_size;
+	foreach $k (@hap_set) {
+		my(@nodes) = @{$allpaths{$k}};
+		my($str) = $cond_ver{$nodes[0]};
+		foreach (my($i)=1;$i<=$#nodes;$i++) 
+		{
+			$str = $str.substr($cond_ver{$nodes[$i]},$K-1);
+		}
+		print ">$k\n$str\n";
+	}
 }
